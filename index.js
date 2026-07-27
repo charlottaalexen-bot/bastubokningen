@@ -1,21 +1,33 @@
 const express = require('express');
 const session = require('express-session');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const PASSWORD = "Berga4"; // Lösenord för Bergastrands Båtförening
+const PASSWORD = "Berga4"; // Lösenord för Bergastrands Båtförening[cite: 2]
 const DB_FILE = './bookings.json';
+
+// KONFIGURATION FÖR E-POSTUTSKICK (Anpassa dessa uppgifter om ni har en mail/SMTP)
+// Om ni inte anger SMTP-uppgifter skrivs mailet ut i loggen på Render istället för att krascha.
+const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: process.env.SMTP_PORT || 587,
+    secure: false,
+    auth: {
+        user: process.env.SMTP_USER || 'er-epost@gmail.com',
+        pass: process.env.SMTP_PASS || 'ert-app-lösenord'
+    }
+});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session-hantering för inloggning
 app.use(session({
     secret: 'bergastrand-batu-secret-key',
     resave: false,
     saveUninitialized: true,
-    cookie: { maxAge: 24 * 60 * 60 * 1000 } // Inloggad i 24 timmar
+    cookie: { maxAge: 24 * 60 * 60 * 1000 }
 }));
 
 if (!fs.existsSync(DB_FILE)) {
@@ -33,14 +45,47 @@ function saveBookings(bookings) {
 function isSummer(dateStr) {
     const d = new Date(dateStr);
     const month = d.getMonth() + 1;
-    return month >= 6 && month <= 8; // Juni - Augusti
+    return month >= 6 && month <= 8;
 }
 
 function getDayOfWeek(dateStr) {
-    return new Date(dateStr).getDay(); // 0 = Söndag, 1 = Måndag...
+    return new Date(dateStr).getDay();
 }
 
-// Inloggnings-middleware
+// Hjälpfunktioner för Kalenderlänkar (Google, Outlook, iCal)
+function generateCalendarLinks(date, time, type) {
+    const startHour = time.split(':')[0].padStart(2, '0');
+    const endHour = String(parseInt(startHour) + 2).padStart(2, '0');
+    
+    // Format YYYYMMDDTHHMMSSZ
+    const cleanDate = date.replace(/-/g, '');
+    const startIso = `${cleanDate}T${startHour}0000`;
+    const endIso = `${cleanDate}T${endHour}0000`;
+
+    const title = encodeURIComponent(`Bastubokning Bergastrands Båtförening (${type})`);
+    const details = encodeURIComponent(`Din bastubokning hos Bergastrands Båtförening. Typ: ${type}.`);
+    const location = encodeURIComponent(`Bergastrands Båthus`);
+
+    const googleUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startIso}/${endIso}&details=${details}&location=${location}`;
+    const outlookUrl = `https://outlook.live.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent&subject=${title}&startdt=${date}T${startHour}:00:00&enddt=${date}T${endHour}:00:00&body=${details}&location=${location}`;
+
+    // Skapa iCal-data (för Apple Calendar/Outlook desktop)
+    const icalData = `BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:Bastubokning (${type})
+DESCRIPTION:Din bastubokning hos Bergastrands Båtförening.
+LOCATION:Bergastrands Båthus
+DTSTART:${startIso}
+DTEND:${endIso}
+END:VEVENT
+END:VCALENDAR`;
+
+    const icalDataUri = `data:text/calendar;charset=utf8,${encodeURIComponent(icalData)}`;
+
+    return { googleUrl, outlookUrl, icalDataUri };
+}
+
 function requireAuth(req, res, next) {
     if (req.session && req.session.authenticated) {
         return next();
@@ -48,7 +93,6 @@ function requireAuth(req, res, next) {
     res.redirect('/login');
 }
 
-// Inloggningssida
 app.get('/login', (req, res) => {
     let errorMsg = req.query.error ? '<p style="color:red;">Felaktigt lösenord!</p>' : '';
     res.send(`
@@ -89,7 +133,6 @@ app.post('/login', (req, res) => {
     }
 });
 
-// Huvudsida (skyddad)
 app.get('/', requireAuth, (req, res) => {
     const bookings = getBookings();
     
@@ -213,7 +256,6 @@ app.get('/', requireAuth, (req, res) => {
     res.send(html);
 });
 
-// Hantera bokning med regelkontroller
 app.post('/book', requireAuth, (req, res) => {
     const { property, name, email, date, time, type } = req.body;
     const bookings = getBookings();
@@ -224,13 +266,13 @@ app.post('/book', requireAuth, (req, res) => {
     const isSummerTime = isSummer(date);
     const dayOfWeek = getDayOfWeek(date);
 
-    // Krockkontroll (Endast en bokning per pass)
+    // Krockkontroll
     const existing = bookings.find(b => b.date === date && b.time === time);
     if (existing) {
         return res.send(`<h3>Fel: Detta pass är redan bokat.</h3><a href="/">Tillbaka</a>`);
     }
 
-    // Regler för Sommaren (Juni - Aug)
+    // Regler Juni - Aug
     if (isSummerTime) {
         const diffTime = bookingDate - todayDate;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -239,24 +281,84 @@ app.post('/book', requireAuth, (req, res) => {
             return res.send(`<h3>Fel: Under juni–augusti kan bokning göras tidigast 2 veckor (14 dagar) i förväg.</h3><a href="/">Tillbaka</a>`);
         }
 
-        // Mån (1), Ons (3), Fre (5), Sön (0) = Endast öppna
         const openDays = [0, 1, 3, 5];
         if (openDays.includes(dayOfWeek) && type === 'Sluten') {
-            return res.send(`<h3>Fel: Denna dag (måndag, onsdag, fredag eller söndag under sommaren) tillåter endast ÖPPNA bokningar.</h3><a href="/">Tillbaka</a>`);
+            return res.send(`<h3>Fel: Denna dag tillåter endast ÖPPNA bokningar under sommaren.</h3><a href="/">Tillbaka</a>`);
         }
     } else {
-        // Regler för Vinter (Sep - Maj)
+        // Regler Sep - Maj
         const allowedClosedTimes = ['15:00', '19:00', '21:00'];
         if (type === 'Sluten' && !allowedClosedTimes.includes(time)) {
             return res.send(`<h3>Fel: Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.</h3><a href="/">Tillbaka</a>`);
         }
     }
 
-    // Spara godkänd bokning med e-post
+    // Spara bokningen
     bookings.push({ property, name, email, date, time, type });
     saveBookings(bookings);
 
-    res.redirect('/');
+    // Skapa kalenderlänkar
+    const { googleUrl, outlookUrl, icalDataUri } = generateCalendarLinks(date, time, type);
+    const endHour = parseInt(time) + 2;
+    const timeFormatted = `${time} - ${endHour}:00`;
+
+    // Försök skicka bekräftelsemail
+    const mailOptions = {
+        from: '"Bergastrands Båtförening" <noreply@bergastrand.se>',
+        to: email,
+        subject: `Bokningsbekräftelse Bastu - ${date}`,
+        text: `Tack för din bokning den ${date} kl. ${timeFormatted}.\n\nFastighet: ${property}\nAnsvarig: ${name}\nTyp: ${type}\n\nVälkommen!`
+    };
+
+    transporter.sendMail(mailOptions, (err, info) => {
+        if (err) {
+            console.log('Kunde inte skicka e-post (SMTP ej konfigurerad):', err.message);
+        } else {
+            console.log('Bekräftelsemail skickat:', info.response);
+        }
+    });
+
+    // Visa bekräftelsesida med direktknappar till kalender
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="sv">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Bokningsbekräftelse</title>
+            <style>
+                body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; text-align: center; line-height: 1.6; }
+                .card { background: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 8px; padding: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+                .btn { display: inline-block; padding: 10px 15px; margin: 5px; color: white; border-radius: 5px; text-decoration: none; font-weight: bold; font-size: 14px; }
+                .btn-google { background: #4285F4; }
+                .btn-outlook { background: #0078D4; }
+                .btn-ical { background: #27ae60; }
+                .btn-back { background: #718096; margin-top: 20px; display: inline-block; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2 style="color: #27ae60;">Bokning genomförd!</h2>
+                <p style="font-size: 18px;"><strong>Tack för din bokning den ${date}!</strong></p>
+                <p><strong>Tid:</strong> ${timeFormatted}<br>
+                <strong>Fastighet:</strong> ${property}<br>
+                <strong>Typ:</strong> ${type}</p>
+                
+                <p>En bekräftelse har skickats till <strong>${email}</strong>.</p>
+                
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+                
+                <h3>Lägg till i din kalender:</h3>
+                <a href="${googleUrl}" target="_blank" class="btn btn-google">Google Calendar</a>
+                <a href="${outlookUrl}" target="_blank" class="btn btn-outlook">Outlook Calendar</a>
+                <a href="${icalDataUri}" download="bastubokning.ics" class="btn btn-ical">Ladda ner iCal (.ics)</a>
+                
+                <br>
+                <a href="/" class="btn btn-back">Tillbaka till bokningen</a>
+            </div>
+        </body>
+        </html>
+    `);
 });
 
 app.listen(PORT, () => {
