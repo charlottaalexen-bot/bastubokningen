@@ -1,24 +1,11 @@
 const express = require('express');
 const session = require('express-session');
 const fs = require('fs');
-const nodemailer = require('nodemailer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const PASSWORD = "Berga4"; // Lösenord för Bergastrands Båtförening[cite: 2]
 const DB_FILE = './bookings.json';
-
-// KONFIGURATION FÖR E-POSTUTSKICK (Anpassa dessa uppgifter om ni har en mail/SMTP)
-// Om ni inte anger SMTP-uppgifter skrivs mailet ut i loggen på Render istället för att krascha.
-const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: process.env.SMTP_PORT || 587,
-    secure: false,
-    auth: {
-        user: process.env.SMTP_USER || 'er-epost@gmail.com',
-        pass: process.env.SMTP_PASS || 'ert-app-lösenord'
-    }
-});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -27,7 +14,7 @@ app.use(session({
     secret: 'bergastrand-batu-secret-key',
     resave: false,
     saveUninitialized: true,
-    cookie: { maxAge: 24 * 60 * 60 * 1000 }
+    cookie: { maxAge: 24 * 60 * 60 * 1000 } // Inloggad i 24 timmar
 }));
 
 if (!fs.existsSync(DB_FILE)) {
@@ -45,11 +32,11 @@ function saveBookings(bookings) {
 function isSummer(dateStr) {
     const d = new Date(dateStr);
     const month = d.getMonth() + 1;
-    return month >= 6 && month <= 8;
+    return month >= 6 && month <= 8; // Juni - Augusti
 }
 
 function getDayOfWeek(dateStr) {
-    return new Date(dateStr).getDay();
+    return new Date(dateStr).getDay(); // 0 = Söndag, 1 = Måndag...
 }
 
 // Hjälpfunktioner för Kalenderlänkar (Google, Outlook, iCal)
@@ -57,7 +44,7 @@ function generateCalendarLinks(date, time, type) {
     const startHour = time.split(':')[0].padStart(2, '0');
     const endHour = String(parseInt(startHour) + 2).padStart(2, '0');
     
-    // Format YYYYMMDDTHHMMSSZ
+    // Format YYYYMMDDTHHMMSS
     const cleanDate = date.replace(/-/g, '');
     const startIso = `${cleanDate}T${startHour}0000`;
     const endIso = `${cleanDate}T${endHour}0000`;
@@ -69,7 +56,6 @@ function generateCalendarLinks(date, time, type) {
     const googleUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startIso}/${endIso}&details=${details}&location=${location}`;
     const outlookUrl = `https://outlook.live.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent&subject=${title}&startdt=${date}T${startHour}:00:00&enddt=${date}T${endHour}:00:00&body=${details}&location=${location}`;
 
-    // Skapa iCal-data (för Apple Calendar/Outlook desktop)
     const icalData = `BEGIN:VCALENDAR
 VERSION:2.0
 BEGIN:VEVENT
@@ -93,6 +79,7 @@ function requireAuth(req, res, next) {
     res.redirect('/login');
 }
 
+// Inloggningssida
 app.get('/login', (req, res) => {
     let errorMsg = req.query.error ? '<p style="color:red;">Felaktigt lösenord!</p>' : '';
     res.send(`
@@ -133,6 +120,7 @@ app.post('/login', (req, res) => {
     }
 });
 
+// Huvudsida (skyddad)
 app.get('/', requireAuth, (req, res) => {
     const bookings = getBookings();
     
@@ -256,6 +244,7 @@ app.get('/', requireAuth, (req, res) => {
     res.send(html);
 });
 
+// Hantera bokning
 app.post('/book', requireAuth, (req, res) => {
     const { property, name, email, date, time, type } = req.body;
     const bookings = getBookings();
@@ -302,22 +291,6 @@ app.post('/book', requireAuth, (req, res) => {
     const endHour = parseInt(time) + 2;
     const timeFormatted = `${time} - ${endHour}:00`;
 
-    // Försök skicka bekräftelsemail
-    const mailOptions = {
-        from: '"Bergastrands Båtförening" <noreply@bergastrand.se>',
-        to: email,
-        subject: `Bokningsbekräftelse Bastu - ${date}`,
-        text: `Tack för din bokning den ${date} kl. ${timeFormatted}.\n\nFastighet: ${property}\nAnsvarig: ${name}\nTyp: ${type}\n\nVälkommen!`
-    };
-
-    transporter.sendMail(mailOptions, (err, info) => {
-        if (err) {
-            console.log('Kunde inte skicka e-post (SMTP ej konfigurerad):', err.message);
-        } else {
-            console.log('Bekräftelsemail skickat:', info.response);
-        }
-    });
-
     // Visa bekräftelsesida med direktknappar till kalender
     res.send(`
         <!DOCTYPE html>
@@ -343,8 +316,6 @@ app.post('/book', requireAuth, (req, res) => {
                 <p><strong>Tid:</strong> ${timeFormatted}<br>
                 <strong>Fastighet:</strong> ${property}<br>
                 <strong>Typ:</strong> ${type}</p>
-                
-                <p>En bekräftelse har skickats till <strong>${email}</strong>.</p>
                 
                 <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
                 
