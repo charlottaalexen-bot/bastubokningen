@@ -101,7 +101,7 @@ app.get('/', requireAuth, (req, res) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Bastubokning - Bergastrands Båtförening</title>
         <style>
-            body { font-family: sans-serif; max-width: 800px; margin: 20px auto; padding: 0 15px; line-height: 1.5; color: #333; }
+            body { font-family: sans-serif; max-width: 850px; margin: 20px auto; padding: 0 15px; line-height: 1.5; color: #333; }
             h1, h2 { color: #2c3e50; }
             .info-box { background: #eef6fb; border-left: 4px solid #3498db; padding: 15px; margin-bottom: 20px; font-size: 14px; }
             .form-group { margin-bottom: 15px; }
@@ -139,6 +139,10 @@ app.get('/', requireAuth, (req, res) => {
                 <input type="text" name="name" required placeholder="För- och efternamn">
             </div>
             <div class="form-group">
+                <label>E-postadress:</label>
+                <input type="email" name="email" required placeholder="namn@exempel.se">
+            </div>
+            <div class="form-group">
                 <label>Datum:</label>
                 <input type="date" name="date" required>
             </div>
@@ -170,6 +174,7 @@ app.get('/', requireAuth, (req, res) => {
                     <th>Tid</th>
                     <th>Fastighet</th>
                     <th>Ansvarig</th>
+                    <th>E-post</th>
                     <th>Typ</th>
                 </tr>
             </thead>
@@ -179,17 +184,19 @@ app.get('/', requireAuth, (req, res) => {
     const sortedBookings = bookings.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     if (sortedBookings.length === 0) {
-        html += `<tr><td colspan="5">Inga bokningar finns i kalendern.</td></tr>`;
+        html += `<tr><td colspan="6">Inga bokningar finns i kalendern.</td></tr>`;
     } else {
         sortedBookings.forEach(b => {
             const badgeClass = b.type === 'Sluten' ? 'badge-closed' : 'badge-open';
             const endHour = parseInt(b.time) + 2;
+            const emailDisplay = b.email ? b.email : '-';
             html += `
                 <tr>
                     <td>${b.date}</td>
                     <td>${b.time} - ${endHour}:00</td>
                     <td>${b.property}</td>
                     <td>${b.name}</td>
+                    <td>${emailDisplay}</td>
                     <td><span class="${badgeClass}">${b.type}</span></td>
                 </tr>
             `;
@@ -208,7 +215,7 @@ app.get('/', requireAuth, (req, res) => {
 
 // Hantera bokning med regelkontroller
 app.post('/book', requireAuth, (req, res) => {
-    const { property, name, date, time, type } = req.body;
+    const { property, name, email, date, time, type } = req.body;
     const bookings = getBookings();
 
     const todayStr = new Date().toISOString().split('T')[0];
@@ -245,8 +252,8 @@ app.post('/book', requireAuth, (req, res) => {
         }
     }
 
-    // Spara godkänd bokning
-    bookings.push({ property, name, date, time, type });
+    // Spara godkänd bokning med e-post
+    bookings.push({ property, name, email, date, time, type });
     saveBookings(bookings);
 
     res.redirect('/');
