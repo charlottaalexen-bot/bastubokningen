@@ -32,19 +32,17 @@ function saveBookings(bookings) {
 function isSummer(dateStr) {
     const d = new Date(dateStr);
     const month = d.getMonth() + 1;
-    return month >= 6 && month <= 8; // Juni - Augusti
+    return month >= 6 && month <= 8; // Juni - Augusti[cite: 2]
 }
 
 function getDayOfWeek(dateStr) {
     return new Date(dateStr).getDay(); // 0 = Söndag, 1 = Måndag...
 }
 
-// Hjälpfunktioner för Kalenderlänkar (Google, Outlook, iCal)
 function generateCalendarLinks(date, time, type) {
     const startHour = time.split(':')[0].padStart(2, '0');
     const endHour = String(parseInt(startHour) + 2).padStart(2, '0');
     
-    // Format YYYYMMDDTHHMMSS
     const cleanDate = date.replace(/-/g, '');
     const startIso = `${cleanDate}T${startHour}0000`;
     const endIso = `${cleanDate}T${endHour}0000`;
@@ -79,50 +77,27 @@ function requireAuth(req, res, next) {
     res.redirect('/login');
 }
 
-// Inloggningssida
-app.get('/login', (req, res) => {
-    let errorMsg = req.query.error ? '<p style="color:red;">Felaktigt lösenord!</p>' : '';
-    res.send(`
-        <!DOCTYPE html>
-        <html lang="sv">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Inloggning - Bergastrands Båtförening</title>
-            <style>
-                body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f4f8; }
-                .login-card { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 350px; text-align: center; }
-                input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
-                button { width: 100%; padding: 10px; background: #2c3e50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
-            </style>
-        </head>
-        <body>
-            <div class="login-card">
-                <h2>Bergastrands Båtförening</h2>
-                <p>Ange lösenord för att boka bastun</p>
-                ${errorMsg}
-                <form action="/login" method="POST">
-                    <input type="password" name="password" placeholder="Lösenord" required>
-                    <button type="submit">Logga in</button>
-                </form>
-            </div>
-        </body>
-        </html>
-    `);
-});
-
-app.post('/login', (req, res) => {
-    if (req.body.password === PASSWORD) {
-        req.session.authenticated = true;
-        res.redirect('/');
-    } else {
-        res.redirect('/login?error=1');
-    }
-});
-
-// Huvudsida (skyddad)
-app.get('/', requireAuth, (req, res) => {
+// Hjälpfunktion för att rendera huvudsidan (med eller utan felmeddelande/sparad data)
+function renderMainPage(req, res, errorMessage = '', formData = {}) {
     const bookings = getBookings();
+    
+    // Standardvärden eller sparade värden från senaste försöket
+    const propertyVal = formData.property || '';
+    const nameVal = formData.name || '';
+    const emailVal = formData.email || '';
+    const dateVal = formData.date || '';
+    const timeVal = formData.time || '13:00';
+    const typeVal = formData.type || 'Öppen';
+
+    let errorHtml = '';
+    if (errorMessage) {
+        errorHtml = `
+            <div class="error-card">
+                <div class="error-title">⚠️ Bokningen kunde inte genomföras</div>
+                <div class="error-body">${errorMessage}</div>
+            </div>
+        `;
+    }
     
     let html = `
     <!DOCTYPE html>
@@ -135,10 +110,24 @@ app.get('/', requireAuth, (req, res) => {
             body { font-family: sans-serif; max-width: 850px; margin: 20px auto; padding: 0 15px; line-height: 1.5; color: #333; }
             h1, h2 { color: #2c3e50; }
             .info-box { background: #eef6fb; border-left: 4px solid #3498db; padding: 15px; margin-bottom: 20px; font-size: 14px; }
+            
+            .error-card { 
+                background: #fdf2f2; 
+                border: 1px solid #f8b4b4; 
+                border-left: 5px solid #e74c3c; 
+                border-radius: 6px; 
+                padding: 15px 20px; 
+                margin-bottom: 25px; 
+                box-shadow: 0 2px 4px rgba(231, 76, 60, 0.08);
+            }
+            .error-title { font-weight: bold; color: #c0392b; font-size: 16px; margin-bottom: 5px; }
+            .error-body { color: #7f8c8d; font-size: 14px; }
+
             .form-group { margin-bottom: 15px; }
             label { display: block; font-weight: bold; margin-bottom: 5px; }
-            input, select { width: 100%; padding: 8px; box-sizing: border-box; }
-            button { background: #27ae60; color: white; border: none; padding: 10px 15px; font-size: 16px; cursor: pointer; border-radius: 4px; }
+            input, select { width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+            input:focus, select:focus { border-color: #3498db; outline: none; }
+            button { background: #27ae60; color: white; border: none; padding: 12px 20px; font-size: 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
             button:hover { background: #219150; }
             table { width: 100%; border-collapse: collapse; margin-top: 20px; }
             th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
@@ -152,46 +141,48 @@ app.get('/', requireAuth, (req, res) => {
         
         <div class="info-box">
             <strong>Basturegler:</strong><br>
-            • Max 1 bokning per dag (2 timmar). Endast 1 samtidig bokning per pass.<br>
+            • Max 1 bokning per dag (2 timmar).<br>
             • Max 1 sluten och 3 öppna bokningar per vecka per medlem/hyrestagare.<br>
             • <strong>Juni–Aug:</strong> Kan bokas max 2 veckor i förväg. Mån, Ons, Fre & Sön endast öppna bokningar.<br>
             • <strong>Sep–Maj:</strong> Slutna pass kan bokas kl 15–17, 19–21 & 21–23.<br>
-            • <em>Bokning av hela huset görs via sekreteraren. Ansvarig: Tommy Glasér (tommylglaser@gmail.com / 070-5472048)</em>
+            • <em>Bokning av hela huset görs via sekreteraren. Ansvarig: Tommy Glasér (tommylglaser@gmail.com / 070-5472048)</em>[cite: 2]
         </div>
+
+        ${errorHtml}
 
         <h2>Gör en bokning</h2>
         <form action="/book" method="POST">
             <div class="form-group">
                 <label>Fastighet:</label>
-                <input type="text" name="property" required placeholder="t.ex. Berga 1:2">
+                <input type="text" name="property" value="${propertyVal}" required placeholder="t.ex. Berga 1:2">
             </div>
             <div class="form-group">
                 <label>Ansvarig medlem/hyrestagare:</label>
-                <input type="text" name="name" required placeholder="För- och efternamn">
+                <input type="text" name="name" value="${nameVal}" required placeholder="För- och efternamn">
             </div>
             <div class="form-group">
                 <label>E-postadress:</label>
-                <input type="email" name="email" required placeholder="namn@exempel.se">
+                <input type="email" name="email" value="${emailVal}" required placeholder="namn@exempel.se">
             </div>
             <div class="form-group">
                 <label>Datum:</label>
-                <input type="date" name="date" required>
+                <input type="date" name="date" value="${dateVal}" required>
             </div>
             <div class="form-group">
                 <label>Pass (2 timmar):</label>
                 <select name="time" required>
-                    <option value="13:00">13:00 - 15:00</option>
-                    <option value="15:00">15:00 - 17:00</option>
-                    <option value="17:00">17:00 - 19:00</option>
-                    <option value="19:00">19:00 - 21:00</option>
-                    <option value="21:00">21:00 - 23:00</option>
+                    <option value="13:00" ${timeVal === '13:00' ? 'selected' : ''}>13:00 - 15:00</option>
+                    <option value="15:00" ${timeVal === '15:00' ? 'selected' : ''}>15:00 - 17:00</option>
+                    <option value="17:00" ${timeVal === '17:00' ? 'selected' : ''}>17:00 - 19:00</option>
+                    <option value="19:00" ${timeVal === '19:00' ? 'selected' : ''}>19:00 - 21:00</option>
+                    <option value="21:00" ${timeVal === '21:00' ? 'selected' : ''}>21:00 - 23:00</option>
                 </select>
             </div>
             <div class="form-group">
                 <label>Typ av bokning:</label>
                 <select name="type" required>
-                    <option value="Öppen">Öppen (Sällskap välkomnas)</option>
-                    <option value="Sluten">Sluten (Egentid)</option>
+                    <option value="Öppen" ${typeVal === 'Öppen' ? 'selected' : ''}>Öppen (Sällskap välkomnas)</option>
+                    <option value="Sluten" ${typeVal === 'Sluten' ? 'selected' : ''}>Sluten (Egentid)</option>
                 </select>
             </div>
             <button type="submit">Boka pass</button>
@@ -242,6 +233,52 @@ app.get('/', requireAuth, (req, res) => {
     `;
 
     res.send(html);
+}
+
+// Inloggningssida
+app.get('/login', (req, res) => {
+    let errorMsg = req.query.error ? '<p style="color:red;">Felaktigt lösenord!</p>' : '';
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="sv">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Inloggning - Bergastrands Båtförening</title>
+            <style>
+                body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f4f8; }
+                .login-card { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 350px; text-align: center; }
+                input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
+                button { width: 100%; padding: 10px; background: #2c3e50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+            </style>
+        </head>
+        <body>
+            <div class="login-card">
+                <h2>Bergastrands Båtförening</h2>
+                <p>Ange lösenord för att boka bastun</p>
+                ${errorMsg}
+                <form action="/login" method="POST">
+                    <input type="password" name="password" placeholder="Lösenord" required>
+                    <button type="submit">Logga in</button>
+                </form>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+app.post('/login', (req, res) => {
+    if (req.body.password === PASSWORD) {
+        req.session.authenticated = true;
+        res.redirect('/');
+    } else {
+        res.redirect('/login?error=1');
+    }
+});
+
+// Huvudsida (skyddad)
+app.get('/', requireAuth, (req, res) => {
+    renderMainPage(req, res);
 });
 
 // Hantera bokning
@@ -258,7 +295,7 @@ app.post('/book', requireAuth, (req, res) => {
     // Krockkontroll
     const existing = bookings.find(b => b.date === date && b.time === time);
     if (existing) {
-        return res.send(`<h3>Fel: Detta pass är redan bokat.</h3><a href="/">Tillbaka</a>`);
+        return renderMainPage(req, res, 'Detta pass är tyvärr redan bokat. Vänligen välj en annan tid eller datum.', req.body);
     }
 
     // Regler Juni - Aug
@@ -267,18 +304,18 @@ app.post('/book', requireAuth, (req, res) => {
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
         if (diffDays > 14) {
-            return res.send(`<h3>Fel: Under juni–augusti kan bokning göras tidigast 2 veckor (14 dagar) i förväg.</h3><a href="/">Tillbaka</a>`);
+            return renderMainPage(req, res, 'Under juni–augusti kan bokningar göras tidigast 2 veckor (14 dagar) i förväg.', req.body);
         }
 
-        const openDays = [0, 1, 3, 5];
+        const openDays = [0, 1, 3, 5]; // Mån, Ons, Fre, Sön
         if (openDays.includes(dayOfWeek) && type === 'Sluten') {
-            return res.send(`<h3>Fel: Denna dag tillåter endast ÖPPNA bokningar under sommaren.</h3><a href="/">Tillbaka</a>`);
+            return renderMainPage(req, res, 'På måndagar, onsdagar, fredagar och söndagar under sommaren tillåts endast ÖPPNA bokningar.', req.body);
         }
     } else {
         // Regler Sep - Maj
         const allowedClosedTimes = ['15:00', '19:00', '21:00'];
         if (type === 'Sluten' && !allowedClosedTimes.includes(time)) {
-            return res.send(`<h3>Fel: Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.</h3><a href="/">Tillbaka</a>`);
+            return renderMainPage(req, res, 'Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.', req.body);
         }
     }
 
@@ -291,7 +328,7 @@ app.post('/book', requireAuth, (req, res) => {
     const endHour = parseInt(time) + 2;
     const timeFormatted = `${time} - ${endHour}:00`;
 
-    // Visa bekräftelsesida med direktknappar till kalender
+    // Visa bekräftelsesida
     res.send(`
         <!DOCTYPE html>
         <html lang="sv">
