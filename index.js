@@ -14,7 +14,7 @@ app.use(session({
     secret: 'bergastrand-batu-secret-key',
     resave: false,
     saveUninitialized: true,
-    cookie: { maxAge: 24 * 60 * 60 * 1000 } // Inloggad i 24 timmar
+    cookie: { maxAge: 24 * 60 * 60 * 1000 }
 }));
 
 if (!fs.existsSync(DB_FILE)) {
@@ -77,11 +77,9 @@ function requireAuth(req, res, next) {
     res.redirect('/login');
 }
 
-// Hjälpfunktion för att rendera huvudsidan (med eller utan felmeddelande/sparad data)
 function renderMainPage(req, res, errorMessage = '', formData = {}) {
     const bookings = getBookings();
     
-    // Standardvärden eller sparade värden från senaste försöket
     const propertyVal = formData.property || '';
     const nameVal = formData.name || '';
     const emailVal = formData.email || '';
@@ -121,7 +119,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
                 box-shadow: 0 2px 4px rgba(231, 76, 60, 0.08);
             }
             .error-title { font-weight: bold; color: #c0392b; font-size: 16px; margin-bottom: 5px; }
-            .error-body { color: #7f8c8d; font-size: 14px; }
+            .error-body { color: #555; font-size: 14px; }
 
             .form-group { margin-bottom: 15px; }
             label { display: block; font-weight: bold; margin-bottom: 5px; }
@@ -276,7 +274,7 @@ app.post('/login', (req, res) => {
     }
 });
 
-// Huvudsida (skyddad)
+// Huvudsida
 app.get('/', requireAuth, (req, res) => {
     renderMainPage(req, res);
 });
@@ -289,16 +287,22 @@ app.post('/book', requireAuth, (req, res) => {
     const todayStr = new Date().toISOString().split('T')[0];
     const bookingDate = new Date(date);
     const todayDate = new Date(todayStr);
+
+    // 1. Spärr för historiska datum
+    if (bookingDate < todayDate) {
+        return renderMainPage(req, res, 'Det går inte att boka datum som redan har passerat.', req.body);
+    }
+
     const isSummerTime = isSummer(date);
     const dayOfWeek = getDayOfWeek(date);
 
-    // Krockkontroll
+    // 2. Krockkontroll
     const existing = bookings.find(b => b.date === date && b.time === time);
     if (existing) {
         return renderMainPage(req, res, 'Detta pass är tyvärr redan bokat. Vänligen välj en annan tid eller datum.', req.body);
     }
 
-    // Regler Juni - Aug
+    // 3. Regler Juni - Aug
     if (isSummerTime) {
         const diffTime = bookingDate - todayDate;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -307,12 +311,13 @@ app.post('/book', requireAuth, (req, res) => {
             return renderMainPage(req, res, 'Under juni–augusti kan bokningar göras tidigast 2 veckor (14 dagar) i förväg.', req.body);
         }
 
-        const openDays = [0, 1, 3, 5]; // Mån, Ons, Fre, Sön
+        // Mån (1), Ons (3), Fre (5), Sön (0) = Endast öppna bokningar[cite: 2]
+        const openDays = [0, 1, 3, 5];
         if (openDays.includes(dayOfWeek) && type === 'Sluten') {
             return renderMainPage(req, res, 'På måndagar, onsdagar, fredagar och söndagar under sommaren tillåts endast ÖPPNA bokningar.', req.body);
         }
     } else {
-        // Regler Sep - Maj
+        // 4. Regler Sep - Maj[cite: 2]
         const allowedClosedTimes = ['15:00', '19:00', '21:00'];
         if (type === 'Sluten' && !allowedClosedTimes.includes(time)) {
             return renderMainPage(req, res, 'Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.', req.body);
