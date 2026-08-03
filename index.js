@@ -28,13 +28,11 @@ function getBookings() {
     const oneYearAgo = new Date();
     oneYearAgo.setDate(now.getDate() - 365);
 
-    // Filtrera bort bokningar äldre än 1 år
     const activeBookings = rawBookings.filter(b => {
         const bookingDate = new Date(b.date);
         return bookingDate >= oneYearAgo;
     });
 
-    // Spara om filen ifall gamla bokningar rensades bort
     if (activeBookings.length !== rawBookings.length) {
         saveBookings(activeBookings);
     }
@@ -115,9 +113,20 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
     }
 
     // Dela upp bokningar i kommande vs passerade
-    const todayStr = new Date().toISOString().split('T')[0];
-    const upcomingBookings = bookings.filter(b => b.date >= todayStr).sort((a, b) => new Date(a.date) - new Date(b.date));
-    const pastBookings = bookings.filter(b => b.date < todayStr).sort((a, b) => new Date(b.date) - new Date(a.date)); // Senaste passerade överst
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+    const currentHour = now.getHours();
+
+    const upcomingBookings = bookings.filter(b => {
+        if (b.date > todayStr) return true;
+        if (b.date === todayStr) {
+            const bookingStartHour = parseInt(b.time.split(':')[0]);
+            return bookingStartHour + 2 > currentHour; // Räknas som kommande fram tills passet är slut
+        }
+        return false;
+    }).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    const pastBookings = bookings.filter(b => !upcomingBookings.includes(b)).sort((a, b) => new Date(b.date) - new Date(a.date));
     
     let html = `
     <!DOCTYPE html>
@@ -167,7 +176,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         
         <div class="info-box">
             <strong>Basturegler:</strong><br>
-            • Max 1 bokning per dag (2 timmar). <br>
+            • Max 1 bokning per dag (2 timmar).<br>
             • Max 1 sluten och 3 öppna bokningar per vecka per medlem/hyrestagare.<br>
             • <strong>Juni–Aug:</strong> Kan bokas max 2 veckor i förväg. Mån, Ons, Fre & Sön endast öppna bokningar.<br>
             • <strong>Sep–Maj:</strong> Slutna pass kan bokas kl 15–17, 19–21 & 21–23.<br>
@@ -347,22 +356,36 @@ app.post('/book', requireAuth, (req, res) => {
     const { property, name, email, date, time, type } = req.body;
     const bookings = getBookings();
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
     const bookingDate = new Date(date);
     const todayDate = new Date(todayStr);
 
+    // 1. Kontroll för passerade datum
     if (bookingDate < todayDate) {
         return renderMainPage(req, res, 'Det går inte att boka datum som redan har passerat.', req.body);
+    }
+
+    // 2. Kontroll för klockslag om bokningen gäller DAGENS datum
+    if (date === todayStr) {
+        const currentHour = now.getHours();
+        const bookingStartHour = parseInt(time.split(':')[0]);
+
+        if (bookingStartHour <= currentHour) {
+            return renderMainPage(req, res, `Passet kl. ${time} har redan påbörjats eller passerats för idag.`, req.body);
+        }
     }
 
     const isSummerTime = isSummer(date);
     const dayOfWeek = getDayOfWeek(date);
 
+    // 3. Krockkontroll
     const existing = bookings.find(b => b.date === date && b.time === time);
     if (existing) {
         return renderMainPage(req, res, 'Detta pass är tyvärr redan bokat. Vänligen välj en annan tid eller datum.', req.body);
     }
 
+    // 4. Regler Juni - Aug
     if (isSummerTime) {
         const diffTime = bookingDate - todayDate;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -376,6 +399,7 @@ app.post('/book', requireAuth, (req, res) => {
             return renderMainPage(req, res, 'På måndagar, onsdagar, fredagar och söndagar under sommaren tillåts endast ÖPPNA bokningar.', req.body);
         }
     } else {
+        // 5. Regler Sep - Maj[cite: 2]
         const allowedClosedTimes = ['15:00', '19:00', '21:00'];
         if (type === 'Sluten' && !allowedClosedTimes.includes(time)) {
             return renderMainPage(req, res, 'Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.', req.body);
