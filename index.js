@@ -21,8 +21,25 @@ if (!fs.existsSync(DB_FILE)) {
     fs.writeFileSync(DB_FILE, JSON.stringify([]));
 }
 
+// Hämtar bokningar och rensar automatiskt bort de som är äldre än 1 år (365 dagar)
 function getBookings() {
-    return JSON.parse(fs.readFileSync(DB_FILE));
+    const rawBookings = JSON.parse(fs.readFileSync(DB_FILE));
+    const now = new Date();
+    const oneYearAgo = new Date();
+    oneYearAgo.setDate(now.getDate() - 365);
+
+    // Filtrera bort bokningar äldre än 1 år
+    const activeBookings = rawBookings.filter(b => {
+        const bookingDate = new Date(b.date);
+        return bookingDate >= oneYearAgo;
+    });
+
+    // Spara om filen ifall gamla bokningar rensades bort
+    if (activeBookings.length !== rawBookings.length) {
+        saveBookings(activeBookings);
+    }
+
+    return activeBookings;
 }
 
 function saveBookings(bookings) {
@@ -96,6 +113,11 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
             </div>
         `;
     }
+
+    // Dela upp bokningar i kommande vs passerade
+    const todayStr = new Date().toISOString().split('T')[0];
+    const upcomingBookings = bookings.filter(b => b.date >= todayStr).sort((a, b) => new Date(a.date) - new Date(b.date));
+    const pastBookings = bookings.filter(b => b.date < todayStr).sort((a, b) => new Date(b.date) - new Date(a.date)); // Senaste passerade överst
     
     let html = `
     <!DOCTYPE html>
@@ -106,7 +128,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         <title>Bastubokning - Bergastrands Båtförening</title>
         <style>
             body { font-family: sans-serif; max-width: 850px; margin: 20px auto; padding: 0 15px; line-height: 1.5; color: #333; }
-            h1, h2 { color: #2c3e50; }
+            h1, h2, h3 { color: #2c3e50; }
             .info-box { background: #eef6fb; border-left: 4px solid #3498db; padding: 15px; margin-bottom: 20px; font-size: 14px; }
             
             .error-card { 
@@ -127,11 +149,17 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
             input:focus, select:focus { border-color: #3498db; outline: none; }
             button { background: #27ae60; color: white; border: none; padding: 12px 20px; font-size: 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
             button:hover { background: #219150; }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            
+            table { width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 30px; }
             th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-            th { background: #eee; }
+            th { background: #f4f6f7; }
+            
             .badge-closed { background: #e74c3c; color: white; padding: 3px 6px; border-radius: 3px; font-size: 12px; }
             .badge-open { background: #2ecc71; color: white; padding: 3px 6px; border-radius: 3px; font-size: 12px; }
+            .badge-past { background: #95a5a6; color: white; padding: 3px 6px; border-radius: 3px; font-size: 12px; }
+            
+            .past-row { color: #7f8c8d; background-color: #fafafa; }
+            .past-section { margin-top: 40px; border-top: 2px dashed #ddd; padding-top: 20px; }
         </style>
     </head>
     <body>
@@ -139,7 +167,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         
         <div class="info-box">
             <strong>Basturegler:</strong><br>
-            • Max 1 bokning per dag (2 timmar).<br>
+            • Max 1 bokning per dag (2 timmar). <br>
             • Max 1 sluten och 3 öppna bokningar per vecka per medlem/hyrestagare.<br>
             • <strong>Juni–Aug:</strong> Kan bokas max 2 veckor i förväg. Mån, Ons, Fre & Sön endast öppna bokningar.<br>
             • <strong>Sep–Maj:</strong> Slutna pass kan bokas kl 15–17, 19–21 & 21–23.<br>
@@ -186,7 +214,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
             <button type="submit">Boka pass</button>
         </form>
 
-        <h2>Registrerade bokningar</h2>
+        <h2>Kommande bokningar</h2>
         <table>
             <thead>
                 <tr>
@@ -201,18 +229,16 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
             <tbody>
     `;
 
-    const sortedBookings = bookings.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    if (sortedBookings.length === 0) {
-        html += `<tr><td colspan="6">Inga bokningar finns i kalendern.</td></tr>`;
+    if (upcomingBookings.length === 0) {
+        html += `<tr><td colspan="6">Inga kommande bokningar finns i kalendern.</td></tr>`;
     } else {
-        sortedBookings.forEach(b => {
+        upcomingBookings.forEach(b => {
             const badgeClass = b.type === 'Sluten' ? 'badge-closed' : 'badge-open';
             const endHour = parseInt(b.time) + 2;
             const emailDisplay = b.email ? b.email : '-';
             html += `
                 <tr>
-                    <td>${b.date}</td>
+                    <td><strong>${b.date}</strong></td>
                     <td>${b.time} - ${endHour}:00</td>
                     <td>${b.property}</td>
                     <td>${b.name}</td>
@@ -226,6 +252,45 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
     html += `
             </tbody>
         </table>
+
+        <div class="past-section">
+            <h3>Historik (Passerade bokningar sparas i 1 år)</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Datum</th>
+                        <th>Tid</th>
+                        <th>Fastighet</th>
+                        <th>Ansvarig</th>
+                        <th>Typ</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+
+    if (pastBookings.length === 0) {
+        html += `<tr class="past-row"><td colspan="6">Inga passerade bokningar sparade ännu.</td></tr>`;
+    } else {
+        pastBookings.forEach(b => {
+            const endHour = parseInt(b.time) + 2;
+            html += `
+                <tr class="past-row">
+                    <td>${b.date}</td>
+                    <td>${b.time} - ${endHour}:00</td>
+                    <td>${b.property}</td>
+                    <td>${b.name}</td>
+                    <td>${b.type}</td>
+                    <td><span class="badge-past">Passerad</span></td>
+                </tr>
+            `;
+        });
+    }
+
+    html += `
+                </tbody>
+            </table>
+        </div>
     </body>
     </html>
     `;
@@ -274,12 +339,10 @@ app.post('/login', (req, res) => {
     }
 });
 
-// Huvudsida
 app.get('/', requireAuth, (req, res) => {
     renderMainPage(req, res);
 });
 
-// Hantera bokning
 app.post('/book', requireAuth, (req, res) => {
     const { property, name, email, date, time, type } = req.body;
     const bookings = getBookings();
@@ -288,7 +351,6 @@ app.post('/book', requireAuth, (req, res) => {
     const bookingDate = new Date(date);
     const todayDate = new Date(todayStr);
 
-    // 1. Spärr för historiska datum
     if (bookingDate < todayDate) {
         return renderMainPage(req, res, 'Det går inte att boka datum som redan har passerat.', req.body);
     }
@@ -296,13 +358,11 @@ app.post('/book', requireAuth, (req, res) => {
     const isSummerTime = isSummer(date);
     const dayOfWeek = getDayOfWeek(date);
 
-    // 2. Krockkontroll
     const existing = bookings.find(b => b.date === date && b.time === time);
     if (existing) {
         return renderMainPage(req, res, 'Detta pass är tyvärr redan bokat. Vänligen välj en annan tid eller datum.', req.body);
     }
 
-    // 3. Regler Juni - Aug
     if (isSummerTime) {
         const diffTime = bookingDate - todayDate;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -311,29 +371,24 @@ app.post('/book', requireAuth, (req, res) => {
             return renderMainPage(req, res, 'Under juni–augusti kan bokningar göras tidigast 2 veckor (14 dagar) i förväg.', req.body);
         }
 
-        // Mån (1), Ons (3), Fre (5), Sön (0) = Endast öppna bokningar[cite: 2]
         const openDays = [0, 1, 3, 5];
         if (openDays.includes(dayOfWeek) && type === 'Sluten') {
             return renderMainPage(req, res, 'På måndagar, onsdagar, fredagar och söndagar under sommaren tillåts endast ÖPPNA bokningar.', req.body);
         }
     } else {
-        // 4. Regler Sep - Maj[cite: 2]
         const allowedClosedTimes = ['15:00', '19:00', '21:00'];
         if (type === 'Sluten' && !allowedClosedTimes.includes(time)) {
             return renderMainPage(req, res, 'Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.', req.body);
         }
     }
 
-    // Spara bokningen
     bookings.push({ property, name, email, date, time, type });
     saveBookings(bookings);
 
-    // Skapa kalenderlänkar
     const { googleUrl, outlookUrl, icalDataUri } = generateCalendarLinks(date, time, type);
     const endHour = parseInt(time) + 2;
     const timeFormatted = `${time} - ${endHour}:00`;
 
-    // Visa bekräftelsesida
     res.send(`
         <!DOCTYPE html>
         <html lang="sv">
