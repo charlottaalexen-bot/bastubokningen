@@ -4,7 +4,8 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const PASSWORD = "Berga4"; // Lösenord för Bergastrands Båtförening[cite: 2]
+const USER_PASSWORD = "Berga4";       // Medlemslösenord
+const ADMIN_PASSWORD = "Berga4admin"; // Adminlösenord
 const DB_FILE = './bookings.json';
 
 app.use(express.json());
@@ -21,7 +22,6 @@ if (!fs.existsSync(DB_FILE)) {
     fs.writeFileSync(DB_FILE, JSON.stringify([]));
 }
 
-// Hämtar bokningar och rensar automatiskt bort de som är äldre än 1 år (365 dagar)
 function getBookings() {
     const rawBookings = JSON.parse(fs.readFileSync(DB_FILE));
     const now = new Date();
@@ -47,11 +47,11 @@ function saveBookings(bookings) {
 function isSummer(dateStr) {
     const d = new Date(dateStr);
     const month = d.getMonth() + 1;
-    return month >= 6 && month <= 8; // Juni - Augusti[cite: 2]
+    return month >= 6 && month <= 8;
 }
 
 function getDayOfWeek(dateStr) {
-    return new Date(dateStr).getDay(); // 0 = Söndag, 1 = Måndag...
+    return new Date(dateStr).getDay();
 }
 
 function generateCalendarLinks(date, time, type) {
@@ -94,6 +94,7 @@ function requireAuth(req, res, next) {
 
 function renderMainPage(req, res, errorMessage = '', formData = {}) {
     const bookings = getBookings();
+    const isAdmin = req.session.isAdmin || false;
     
     const propertyVal = formData.property || '';
     const nameVal = formData.name || '';
@@ -112,7 +113,6 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         `;
     }
 
-    // Dela upp bokningar i kommande vs passerade
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
     const currentHour = now.getHours();
@@ -121,7 +121,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         if (b.date > todayStr) return true;
         if (b.date === todayStr) {
             const bookingStartHour = parseInt(b.time.split(':')[0]);
-            return bookingStartHour + 2 > currentHour; // Räknas som kommande fram tills passet är slut
+            return bookingStartHour + 2 > currentHour;
         }
         return false;
     }).sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -138,7 +138,9 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         <style>
             body { font-family: sans-serif; max-width: 850px; margin: 20px auto; padding: 0 15px; line-height: 1.5; color: #333; }
             h1, h2, h3 { color: #2c3e50; }
+            .header-bar { display: flex; justify-content: space-between; align-items: center; }
             .info-box { background: #eef6fb; border-left: 4px solid #3498db; padding: 15px; margin-bottom: 20px; font-size: 14px; }
+            .admin-banner { background: #f39c12; color: white; padding: 8px 12px; border-radius: 4px; font-weight: bold; font-size: 13px; }
             
             .error-card { 
                 background: #fdf2f2; 
@@ -159,6 +161,9 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
             button { background: #27ae60; color: white; border: none; padding: 12px 20px; font-size: 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
             button:hover { background: #219150; }
             
+            .btn-delete { background: #e74c3c; color: white; border: none; padding: 5px 10px; font-size: 12px; cursor: pointer; border-radius: 3px; }
+            .btn-delete:hover { background: #c0392b; }
+
             table { width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 30px; }
             th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
             th { background: #f4f6f7; }
@@ -172,11 +177,14 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         </style>
     </head>
     <body>
-        <h1>Bastubokning - Bergastrands Båtförening</h1>
+        <div class="header-bar">
+            <h1>Bastubokning - Bergastrands Båtförening</h1>
+            ${isAdmin ? '<span class="admin-banner">Inloggad som Admin</span>' : ''}
+        </div>
         
         <div class="info-box">
             <strong>Basturegler:</strong><br>
-            • Max 1 bokning per dag (2 timmar).<br>
+            • Max 1 bokning per dag (2 timmar) <br>
             • Max 1 sluten och 3 öppna bokningar per vecka per medlem/hyrestagare.<br>
             • <strong>Juni–Aug:</strong> Kan bokas max 2 veckor i förväg. Mån, Ons, Fre & Sön endast öppna bokningar.<br>
             • <strong>Sep–Maj:</strong> Slutna pass kan bokas kl 15–17, 19–21 & 21–23.<br>
@@ -233,13 +241,14 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
                     <th>Ansvarig</th>
                     <th>E-post</th>
                     <th>Typ</th>
+                    ${isAdmin ? '<th>Åtgärd</th>' : ''}
                 </tr>
             </thead>
             <tbody>
     `;
 
     if (upcomingBookings.length === 0) {
-        html += `<tr><td colspan="6">Inga kommande bokningar finns i kalendern.</td></tr>`;
+        html += `<tr><td colspan="${isAdmin ? 7 : 6}">Inga kommande bokningar finns i kalendern.</td></tr>`;
     } else {
         upcomingBookings.forEach(b => {
             const badgeClass = b.type === 'Sluten' ? 'badge-closed' : 'badge-open';
@@ -253,6 +262,13 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
                     <td>${b.name}</td>
                     <td>${emailDisplay}</td>
                     <td><span class="${badgeClass}">${b.type}</span></td>
+                    ${isAdmin ? `<td>
+                        <form action="/delete" method="POST" style="margin:0;" onsubmit="return confirm('Vill du verkligen ta bort denna bokning?');">
+                            <input type="hidden" name="date" value="${b.date}">
+                            <input type="hidden" name="time" value="${b.time}">
+                            <button type="submit" class="btn-delete">Ta bort</button>
+                        </form>
+                    </td>` : ''}
                 </tr>
             `;
         });
@@ -273,13 +289,14 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
                         <th>Ansvarig</th>
                         <th>Typ</th>
                         <th>Status</th>
+                        ${isAdmin ? '<th>Åtgärd</th>' : ''}
                     </tr>
                 </thead>
                 <tbody>
     `;
 
     if (pastBookings.length === 0) {
-        html += `<tr class="past-row"><td colspan="6">Inga passerade bokningar sparade ännu.</td></tr>`;
+        html += `<tr class="past-row"><td colspan="${isAdmin ? 7 : 6}">Inga passerade bokningar sparade ännu.</td></tr>`;
     } else {
         pastBookings.forEach(b => {
             const endHour = parseInt(b.time) + 2;
@@ -291,6 +308,13 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
                     <td>${b.name}</td>
                     <td>${b.type}</td>
                     <td><span class="badge-past">Passerad</span></td>
+                    ${isAdmin ? `<td>
+                        <form action="/delete" method="POST" style="margin:0;" onsubmit="return confirm('Vill du verkligen ta bort denna historiska bokning?');">
+                            <input type="hidden" name="date" value="${b.date}">
+                            <input type="hidden" name="time" value="${b.time}">
+                            <button type="submit" class="btn-delete">Ta bort</button>
+                        </form>
+                    </td>` : ''}
                 </tr>
             `;
         });
@@ -340,8 +364,14 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', (req, res) => {
-    if (req.body.password === PASSWORD) {
+    const { password } = req.body;
+    if (password === ADMIN_PASSWORD) {
         req.session.authenticated = true;
+        req.session.isAdmin = true;
+        res.redirect('/');
+    } else if (password === USER_PASSWORD) {
+        req.session.authenticated = true;
+        req.session.isAdmin = false;
         res.redirect('/');
     } else {
         res.redirect('/login?error=1');
@@ -350,6 +380,22 @@ app.post('/login', (req, res) => {
 
 app.get('/', requireAuth, (req, res) => {
     renderMainPage(req, res);
+});
+
+// Admin-funktion: Ta bort bokning
+app.post('/delete', requireAuth, (req, res) => {
+    if (!req.session.isAdmin) {
+        return res.send(`<h3>Endast administratörer kan ta bort bokningar.</h3><a href="/">Tillbaka</a>`);
+    }
+
+    const { date, time } = req.body;
+    let bookings = getBookings();
+
+    // Filtrera bort bokningen som matchar datum och tid
+    bookings = bookings.filter(b => !(b.date === date && b.time === time));
+    saveBookings(bookings);
+
+    res.redirect('/');
 });
 
 app.post('/book', requireAuth, (req, res) => {
@@ -361,12 +407,10 @@ app.post('/book', requireAuth, (req, res) => {
     const bookingDate = new Date(date);
     const todayDate = new Date(todayStr);
 
-    // 1. Kontroll för passerade datum
     if (bookingDate < todayDate) {
         return renderMainPage(req, res, 'Det går inte att boka datum som redan har passerat.', req.body);
     }
 
-    // 2. Kontroll för klockslag om bokningen gäller DAGENS datum
     if (date === todayStr) {
         const currentHour = now.getHours();
         const bookingStartHour = parseInt(time.split(':')[0]);
@@ -379,13 +423,11 @@ app.post('/book', requireAuth, (req, res) => {
     const isSummerTime = isSummer(date);
     const dayOfWeek = getDayOfWeek(date);
 
-    // 3. Krockkontroll
     const existing = bookings.find(b => b.date === date && b.time === time);
     if (existing) {
         return renderMainPage(req, res, 'Detta pass är tyvärr redan bokat. Vänligen välj en annan tid eller datum.', req.body);
     }
 
-    // 4. Regler Juni - Aug
     if (isSummerTime) {
         const diffTime = bookingDate - todayDate;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -399,7 +441,6 @@ app.post('/book', requireAuth, (req, res) => {
             return renderMainPage(req, res, 'På måndagar, onsdagar, fredagar och söndagar under sommaren tillåts endast ÖPPNA bokningar.', req.body);
         }
     } else {
-        // 5. Regler Sep - Maj[cite: 2]
         const allowedClosedTimes = ['15:00', '19:00', '21:00'];
         if (type === 'Sluten' && !allowedClosedTimes.includes(time)) {
             return renderMainPage(req, res, 'Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.', req.body);
