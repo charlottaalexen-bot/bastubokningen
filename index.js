@@ -1,12 +1,31 @@
 const express = require('express');
 const session = require('express-session');
-const fs = require('fs');
+const mongoose = require('mongoose');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const USER_PASSWORD = "Berga4";       // Medlemslösenord
+const USER_PASSWORD = "Berga4";       // Medlemslösenord[cite: 2]
 const ADMIN_PASSWORD = "Berga4admin"; // Adminlösenord
-const DB_FILE = './bookings.json';
+
+// ANSSLUTNING TILL MONGODB (Klistra in din länk här eller sätt som miljövariabel i Render)
+const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://charlottaalexen_db_user:jBM7LZbC6029aBuk@bergauser.sgdq3fn.mongodb.net/?appName=bergauser";
+
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('Ansluten till MongoDB-databasen!'))
+    .catch(err => console.error('Kunde inte ansluta till databasen:', err));
+
+// Databasschema för bokningar
+const bookingSchema = new mongoose.Schema({
+    property: String,
+    name: String,
+    email: String,
+    date: String,
+    time: String,
+    type: String,
+    createdAt: { type: Date, default: Date.now }
+});
+
+const Booking = mongoose.model('Booking', bookingSchema);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -18,36 +37,23 @@ app.use(session({
     cookie: { maxAge: 24 * 60 * 60 * 1000 }
 }));
 
-if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify([]));
-}
-
-function getBookings() {
-    const rawBookings = JSON.parse(fs.readFileSync(DB_FILE));
+async function getBookings() {
     const now = new Date();
     const oneYearAgo = new Date();
     oneYearAgo.setDate(now.getDate() - 365);
+    const oneYearAgoStr = oneYearAgo.toISOString().split('T')[0];
 
-    const activeBookings = rawBookings.filter(b => {
-        const bookingDate = new Date(b.date);
-        return bookingDate >= oneYearAgo;
-    });
+    // Rensa automatiskt gamla bokningar från databasen (> 1 år)
+    await Booking.deleteMany({ date: { $lt: oneYearAgoStr } });
 
-    if (activeBookings.length !== rawBookings.length) {
-        saveBookings(activeBookings);
-    }
-
-    return activeBookings;
-}
-
-function saveBookings(bookings) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(bookings, null, 2));
+    // Hämta alla aktiva bokningar
+    return await Booking.find({});
 }
 
 function isSummer(dateStr) {
     const d = new Date(dateStr);
     const month = d.getMonth() + 1;
-    return month >= 6 && month <= 8;
+    return month >= 6 && month <= 8;[cite: 2]
 }
 
 function getDayOfWeek(dateStr) {
@@ -92,9 +98,40 @@ function requireAuth(req, res, next) {
     res.redirect('/login');
 }
 
-function renderMainPage(req, res, errorMessage = '', formData = {}) {
-    const bookings = getBookings();
+// iCal-prenumerationsfeed
+app.get('/calendar.ics', async (req, res) => {
+    const bookings = await getBookings();
+    let icalContent = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Bergastrands Batforening//Bastubokning//SV\r\nX-WR-CALNAME:Bastukalender - Bergastrand\r\nTIMEZONE:Europe/Stockholm\r\n`;
+
+    bookings.forEach(b => {
+        const startHour = b.time.split(':')[0].padStart(2, '0');
+        const endHour = String(parseInt(startHour) + 2).padStart(2, '0');
+        const cleanDate = b.date.replace(/-/g, '');
+        const startIso = `${cleanDate}T${startHour}0000`;
+        const endIso = `${cleanDate}T${endHour}0000`;
+
+        icalContent += `BEGIN:VEVENT\r\n`;
+        icalContent += `SUMMARY:Bastu (${b.type}): ${b.property} - ${b.name}\r\n`;
+        icalContent += `DESCRIPTION:Bokad av ${b.name} (${b.property}). Typ: ${b.type}.\r\n`;
+        icalContent += `LOCATION:Bergastrands Båthus\r\n`;
+        icalContent += `DTSTART:${startIso}\r\n`;
+        icalContent += `DTEND:${endIso}\r\n`;
+        icalContent += `END:VEVENT\r\n`;
+    });
+
+    icalContent += `END:VCALENDAR`;
+
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="bastukalender.ics"');
+    res.send(icalContent);
+});
+
+async function renderMainPage(req, res, errorMessage = '', formData = {}) {
+    const bookings = await getBookings();
     const isAdmin = req.session.isAdmin || false;
+    const protocol = req.protocol;
+    const host = req.get('host');
+    const subscribeUrl = `${protocol}://${host}/calendar.ics`;
     
     const propertyVal = formData.property || '';
     const nameVal = formData.name || '';
@@ -140,6 +177,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
             h1, h2, h3 { color: #2c3e50; }
             .header-bar { display: flex; justify-content: space-between; align-items: center; }
             .info-box { background: #eef6fb; border-left: 4px solid #3498db; padding: 15px; margin-bottom: 20px; font-size: 14px; }
+            .sub-box { background: #fdfefe; border: 1px solid #d6eaf8; padding: 12px; margin-bottom: 20px; border-radius: 6px; font-size: 13px; }
             .admin-banner { background: #f39c12; color: white; padding: 8px 12px; border-radius: 4px; font-weight: bold; font-size: 13px; }
             
             .error-card { 
@@ -184,11 +222,17 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
         
         <div class="info-box">
             <strong>Basturegler:</strong><br>
-            • Max 1 bokning per dag (2 timmar) <br>
+            • Max 1 bokning per dag (2 timmar)<br>
             • Max 1 sluten och 3 öppna bokningar per vecka per medlem/hyrestagare.<br>
             • <strong>Juni–Aug:</strong> Kan bokas max 2 veckor i förväg. Mån, Ons, Fre & Sön endast öppna bokningar.<br>
             • <strong>Sep–Maj:</strong> Slutna pass kan bokas kl 15–17, 19–21 & 21–23.<br>
             • <em>Bokning av hela huset görs via sekreteraren. Ansvarig: Tommy Glasér (tommylglaser@gmail.com / 070-5472048)</em>[cite: 2]
+        </div>
+
+        <div class="sub-box">
+            <strong>📅 Prenumerera på bastukalendern:</strong><br>
+            Kopiera denna länk och lägg till i din kalenderapp (Google/Apple/Outlook):<br>
+            <input type="text" value="${subscribeUrl}" readonly onclick="this.select();" style="margin-top:5px; background:#f4f4f4;">
         </div>
 
         ${errorHtml}
@@ -264,8 +308,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
                     <td><span class="${badgeClass}">${b.type}</span></td>
                     ${isAdmin ? `<td>
                         <form action="/delete" method="POST" style="margin:0;" onsubmit="return confirm('Vill du verkligen ta bort denna bokning?');">
-                            <input type="hidden" name="date" value="${b.date}">
-                            <input type="hidden" name="time" value="${b.time}">
+                            <input type="hidden" name="id" value="${b._id}">
                             <button type="submit" class="btn-delete">Ta bort</button>
                         </form>
                     </td>` : ''}
@@ -310,8 +353,7 @@ function renderMainPage(req, res, errorMessage = '', formData = {}) {
                     <td><span class="badge-past">Passerad</span></td>
                     ${isAdmin ? `<td>
                         <form action="/delete" method="POST" style="margin:0;" onsubmit="return confirm('Vill du verkligen ta bort denna historiska bokning?');">
-                            <input type="hidden" name="date" value="${b.date}">
-                            <input type="hidden" name="time" value="${b.time}">
+                            <input type="hidden" name="id" value="${b._id}">
                             <button type="submit" class="btn-delete">Ta bort</button>
                         </form>
                     </td>` : ''}
@@ -378,29 +420,24 @@ app.post('/login', (req, res) => {
     }
 });
 
-app.get('/', requireAuth, (req, res) => {
-    renderMainPage(req, res);
+app.get('/', requireAuth, async (req, res) => {
+    await renderMainPage(req, res);
 });
 
-// Admin-funktion: Ta bort bokning
-app.post('/delete', requireAuth, (req, res) => {
+app.post('/delete', requireAuth, async (req, res) => {
     if (!req.session.isAdmin) {
         return res.send(`<h3>Endast administratörer kan ta bort bokningar.</h3><a href="/">Tillbaka</a>`);
     }
 
-    const { date, time } = req.body;
-    let bookings = getBookings();
-
-    // Filtrera bort bokningen som matchar datum och tid
-    bookings = bookings.filter(b => !(b.date === date && b.time === time));
-    saveBookings(bookings);
+    const { id } = req.body;
+    await Booking.findByIdAndDelete(id);
 
     res.redirect('/');
 });
 
-app.post('/book', requireAuth, (req, res) => {
+app.post('/book', requireAuth, async (req, res) => {
     const { property, name, email, date, time, type } = req.body;
-    const bookings = getBookings();
+    const bookings = await getBookings();
 
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
@@ -408,7 +445,7 @@ app.post('/book', requireAuth, (req, res) => {
     const todayDate = new Date(todayStr);
 
     if (bookingDate < todayDate) {
-        return renderMainPage(req, res, 'Det går inte att boka datum som redan har passerat.', req.body);
+        return await renderMainPage(req, res, 'Det går inte att boka datum som redan har passerat.', req.body);
     }
 
     if (date === todayStr) {
@@ -416,7 +453,7 @@ app.post('/book', requireAuth, (req, res) => {
         const bookingStartHour = parseInt(time.split(':')[0]);
 
         if (bookingStartHour <= currentHour) {
-            return renderMainPage(req, res, `Passet kl. ${time} har redan påbörjats eller passerats för idag.`, req.body);
+            return await renderMainPage(req, res, `Passet kl. ${time} har redan påbörjats eller passerats för idag.`, req.body);
         }
     }
 
@@ -425,7 +462,7 @@ app.post('/book', requireAuth, (req, res) => {
 
     const existing = bookings.find(b => b.date === date && b.time === time);
     if (existing) {
-        return renderMainPage(req, res, 'Detta pass är tyvärr redan bokat. Vänligen välj en annan tid eller datum.', req.body);
+        return await renderMainPage(req, res, 'Detta pass är tyvärr redan bokat. Vänligen välj en annan tid eller datum.', req.body);
     }
 
     if (isSummerTime) {
@@ -433,22 +470,23 @@ app.post('/book', requireAuth, (req, res) => {
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
         if (diffDays > 14) {
-            return renderMainPage(req, res, 'Under juni–augusti kan bokningar göras tidigast 2 veckor (14 dagar) i förväg.', req.body);
+            return await renderMainPage(req, res, 'Under juni–augusti kan bokningar göras tidigast 2 veckor (14 dagar) i förväg.', req.body);
         }
 
         const openDays = [0, 1, 3, 5];
         if (openDays.includes(dayOfWeek) && type === 'Sluten') {
-            return renderMainPage(req, res, 'På måndagar, onsdagar, fredagar och söndagar under sommaren tillåts endast ÖPPNA bokningar.', req.body);
+            return await renderMainPage(req, res, 'På måndagar, onsdagar, fredagar och söndagar under sommaren tillåts endast ÖPPNA bokningar.', req.body);
         }
     } else {
         const allowedClosedTimes = ['15:00', '19:00', '21:00'];
         if (type === 'Sluten' && !allowedClosedTimes.includes(time)) {
-            return renderMainPage(req, res, 'Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.', req.body);
+            return await renderMainPage(req, res, 'Under september–maj kan slutna bokningar endast göras på tiderna 15.00–17.00, 19.00–21.00 och 21.00–23.00.', req.body);
         }
     }
 
-    bookings.push({ property, name, email, date, time, type });
-    saveBookings(bookings);
+    // Spara i MongoDB-databasen
+    const newBooking = new Booking({ property, name, email, date, time, type });
+    await newBooking.save();
 
     const { googleUrl, outlookUrl, icalDataUri } = generateCalendarLinks(date, time, type);
     const endHour = parseInt(time) + 2;
