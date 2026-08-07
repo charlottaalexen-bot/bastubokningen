@@ -53,7 +53,7 @@ async function getBookings() {
 function isSummer(dateStr) {
     const d = new Date(dateStr);
     const month = d.getMonth() + 1;
-    return month >= 6 && month <= 8;[cite: 2]
+    return month >= 6 && month <= 8;
 }
 
 function getDayOfWeek(dateStr) {
